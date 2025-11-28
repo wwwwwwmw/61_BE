@@ -1,26 +1,16 @@
-const nodemailer = require('nodemailer');
 const crypto = require('crypto');
+const sgMail = require('@sendgrid/mail');
+
+// Initialize SendGrid
+if (process.env.SENDGRID_API_KEY) {
+  sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+}
 
 // In-memory OTP storage (use Redis in production)
 const otpStore = new Map();
 
-// Lazy transporter initialization
-let transporter = null;
-
-function getTransporter() {
-  if (!transporter) {
-    transporter = nodemailer.createTransporter({
-      host: 'smtp.sendgrid.net',
-      port: 587,
-      secure: false,
-      auth: {
-        user: 'apikey',
-        pass: process.env.SENDGRID_API_KEY,
-      },
-    });
-  }
-  return transporter;
-}
+// NOTE: Previous nodemailer implementation replaced with direct SendGrid API usage.
+// For high volume / production: move OTP store to Redis and add rate limiting per email.
 
 // Generate 6-digit OTP
 const generateOTP = () => {
@@ -148,18 +138,22 @@ const sendOTPEmail = async (email, otp, type = 'registration') => {
     </html>
   `;
 
+  if (!process.env.SENDGRID_API_KEY) {
+    return { success: false, message: 'SendGrid API key chưa được cấu hình' };
+  }
   try {
-    const transporter = getTransporter();
-    await transporter.sendMail({
-      from: process.env.SENDGRID_FROM_EMAIL || 'noreply@app.com',
+    await sgMail.send({
       to: email,
-      subject: subject,
-      html: html,
+      from: {
+        email: process.env.SENDGRID_FROM_EMAIL || 'noreply@app.com',
+        name: process.env.SENDGRID_FROM_NAME || 'Ứng Dụng Tiện Ích'
+      },
+      subject,
+      html,
     });
-
     return { success: true, message: 'Email đã được gửi' };
   } catch (error) {
-    console.error('Send email error:', error);
+    console.error('Send email error:', error.response?.body || error.message);
     return { success: false, message: 'Lỗi khi gửi email', error: error.message };
   }
 };

@@ -16,9 +16,33 @@ const budgetRoutes = require('./routes/budgets');
 const app = express();
 // Database pool (for health & startup check)
 const { pool } = require('./config/database');
+// HTTP + Socket.io setup
+const http = require('http');
+const server = http.createServer(app);
+const { Server } = require('socket.io');
+const io = new Server(server, {
+    cors: {
+        origin: process.env.CORS_ORIGIN || '*',
+        methods: ['GET','POST','PUT','PATCH','DELETE']
+    }
+});
+
+io.on('connection', (socket) => {
+    console.log('🔌 Socket connected:', socket.id);
+    socket.on('disconnect', () => console.log('🔌 Socket disconnected:', socket.id));
+});
 
 // Security middleware
 app.use(helmet());
+
+// Swagger docs
+try {
+    const { swaggerUi, swaggerSpec } = require('./swagger');
+    app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, { explorer: true }));
+    console.log('📄 Swagger UI available at /api-docs');
+} catch (e) {
+    console.warn('Swagger not initialized:', e.message);
+}
 
 // CORS configuration
 app.use(cors({
@@ -87,11 +111,37 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 3000;
 const HOST = '0.0.0.0'; // Listen on all network interfaces
 
+// Reminder scan: emits events for upcoming reminders (runs every minute)
+const scanReminders = async () => {
+    try {
+        // Todos with reminder_time within next minute and not completed
+        const todosRes = await pool.query(`SELECT id, title, reminder_time FROM todos 
+          WHERE reminder_time IS NOT NULL 
+            AND reminder_time <= CURRENT_TIMESTAMP + INTERVAL '1 minute'
+            AND reminder_time > CURRENT_TIMESTAMP
+            AND is_completed = false AND is_deleted = false`);
+        todosRes.rows.forEach(t => {
+            io.emit('todo_reminder', { id: t.id, title: t.title, reminderTime: t.reminder_time });
+        });
+        // Events starting within next minute
+        const eventsRes = await pool.query(`SELECT id, title, event_date FROM events 
+          WHERE event_date <= CURRENT_TIMESTAMP + INTERVAL '1 minute'
+            AND event_date > CURRENT_TIMESTAMP
+            AND is_deleted = false`);
+        eventsRes.rows.forEach(e => {
+            io.emit('event_due', { id: e.id, title: e.title, eventDate: e.event_date });
+        });
+    } catch (err) {
+        console.error('Reminder scan error:', err.message);
+    }
+};
+setInterval(scanReminders, 60_000);
+
 const startServer = async (retries = 5) => {
     for (let attempt = 1; attempt <= retries; attempt++) {
         try {
             await pool.query('SELECT 1');
-            app.listen(PORT, HOST, () => {
+            server.listen(PORT, HOST, () => {
                 console.log('');
                 console.log('╔════════════════════════════════════════════╗');
                 console.log('║   Personal Utility API Server              ║');
@@ -103,6 +153,7 @@ const startServer = async (retries = 5) => {
                 console.log(`📱 LAN:   http://${process.env.DEVICE_IP || 'YOUR_PC_IP'}:${PORT}`);
                 console.log('');
                 console.log('✓ Ready to accept connections from mobile devices');
+                console.log('✓ Socket.io ready for real-time notifications');
                 console.log('');
             });
             return;

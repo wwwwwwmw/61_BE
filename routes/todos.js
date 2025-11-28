@@ -17,6 +17,49 @@ const todoValidation = [
 // @route   GET /api/todos
 // @desc    Get all todos for user
 // @access  Private
+/**
+ * @swagger
+ * /api/todos:
+ *   get:
+ *     summary: Lấy danh sách công việc
+ *     tags: [Todos]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: query
+ *         name: completed
+ *         schema: { type: boolean }
+ *       - in: query
+ *         name: category_id
+ *         schema: { type: integer }
+ *       - in: query
+ *         name: priority
+ *         schema: { type: string, enum: [low, medium, high] }
+ *       - in: query
+ *         name: includeDeleted
+ *         schema: { type: boolean }
+ *       - in: query
+ *         name: q
+ *         schema: { type: string }
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, default: 50 }
+ *       - in: query
+ *         name: offset
+ *         schema: { type: integer, default: 0 }
+ *     responses:
+ *       200:
+ *         description: Danh sách công việc
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/Todo'
+ */
 router.get('/', async (req, res) => {
     try {
         const userId = req.user.id;
@@ -24,7 +67,10 @@ router.get('/', async (req, res) => {
             completed,
             category_id,
             priority,
-            includeDeleted = false
+            includeDeleted = false,
+            q,
+            limit = 50,
+            offset = 0
         } = req.query;
 
         let queryText = `
@@ -62,7 +108,24 @@ router.get('/', async (req, res) => {
             paramIndex++;
         }
 
-        queryText += ' ORDER BY t.position ASC, t.created_at DESC';
+                // Text search (title, description, tags partial)
+                if (q) {
+                        queryText += ` AND (
+                            LOWER(t.title) LIKE LOWER($${paramIndex}) OR
+                            LOWER(t.description) LIKE LOWER($${paramIndex}) OR
+                            EXISTS (
+                                SELECT 1 FROM unnest(t.tags) tag
+                                WHERE LOWER(tag) LIKE LOWER($${paramIndex})
+                            )
+                        )`;
+                        params.push(`%${q}%`);
+                        paramIndex++;
+                }
+
+                queryText += ' ORDER BY t.is_completed ASC, t.priority DESC, t.position ASC, t.created_at DESC';
+                queryText += ` LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
+                params.push(parseInt(limit, 10));
+                params.push(parseInt(offset, 10));
 
         const result = await query(queryText, params);
 
@@ -120,6 +183,33 @@ router.get('/:id', async (req, res) => {
 // @route   POST /api/todos
 // @desc    Create new todo
 // @access  Private
+/**
+ * @swagger
+ * /api/todos:
+ *   post:
+ *     summary: Tạo công việc mới
+ *     tags: [Todos]
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [title]
+ *             properties:
+ *               title: { type: string }
+ *               description: { type: string }
+ *               priority: { type: string, enum: [low, medium, high] }
+ *               category_id: { type: integer }
+ *               tags: { type: array, items: { type: string } }
+ *               due_date: { type: string, format: date-time }
+ *               reminder_time: { type: string, format: date-time }
+ *               client_id: { type: string }
+ *     responses:
+ *       201:
+ *         description: Tạo thành công
+ */
 router.post('/', todoValidation, async (req, res) => {
     try {
         const errors = validationResult(req);
@@ -169,6 +259,28 @@ router.post('/', todoValidation, async (req, res) => {
 // @route   PUT /api/todos/:id
 // @desc    Update todo
 // @access  Private
+/**
+ * @swagger
+ * /api/todos/{id}:
+ *   put:
+ *     summary: Cập nhật công việc
+ *     tags: [Todos]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/Todo'
+ *     responses:
+ *       200:
+ *         description: Cập nhật thành công
+ */
 router.put('/:id', todoValidation, async (req, res) => {
     try {
         const errors = validationResult(req);
@@ -230,6 +342,22 @@ router.put('/:id', todoValidation, async (req, res) => {
 // @route   PATCH /api/todos/:id/toggle
 // @desc    Toggle todo completion status
 // @access  Private
+/**
+ * @swagger
+ * /api/todos/{id}/toggle:
+ *   patch:
+ *     summary: Đổi trạng thái hoàn thành
+ *     tags: [Todos]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *     responses:
+ *       200:
+ *         description: Cập nhật trạng thái thành công
+ */
 router.patch('/:id/toggle', async (req, res) => {
     try {
         const userId = req.user.id;
@@ -270,6 +398,25 @@ router.patch('/:id/toggle', async (req, res) => {
 // @route   DELETE /api/todos/:id
 // @desc    Soft delete todo
 // @access  Private
+/**
+ * @swagger
+ * /api/todos/{id}:
+ *   delete:
+ *     summary: Xóa (mềm hoặc vĩnh viễn) công việc
+ *     tags: [Todos]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *       - in: query
+ *         name: permanent
+ *         schema: { type: boolean }
+ *     responses:
+ *       200:
+ *         description: Xóa thành công
+ */
 router.delete('/:id', async (req, res) => {
     try {
         const userId = req.user.id;
@@ -320,6 +467,26 @@ router.delete('/:id', async (req, res) => {
 // @route   POST /api/todos/sync
 // @desc    Sync todos from client
 // @access  Private
+/**
+ * @swagger
+ * /api/todos/sync:
+ *   post:
+ *     summary: Đồng bộ danh sách công việc từ client
+ *     tags: [Todos]
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               lastSyncTime: { type: string, format: date-time }
+ *               todos: { type: array, items: { $ref: '#/components/schemas/Todo' } }
+ *     responses:
+ *       200:
+ *         description: Đồng bộ thành công
+ */
 router.post('/sync', async (req, res) => {
     const client = await getClient();
 

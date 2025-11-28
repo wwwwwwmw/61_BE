@@ -96,49 +96,86 @@ router.get('/statistics', async (req, res) => {
         const userId = req.user.id;
         const { period = 'monthly', start_date, end_date } = req.query;
 
+        // Determine date range if not provided
+        let startDate = start_date ? new Date(start_date) : new Date();
+        let endDate = end_date ? new Date(end_date) : new Date();
+        const now = new Date();
+        if (!start_date || !end_date) {
+            switch (period) {
+                case 'daily':
+                    startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+                    endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+                    break;
+                case 'weekly':
+                    const day = now.getDay();
+                    startDate = new Date(now);
+                    startDate.setDate(now.getDate() - day);
+                    startDate.setHours(0, 0, 0, 0);
+                    endDate = new Date(startDate);
+                    endDate.setDate(startDate.getDate() + 6);
+                    endDate.setHours(23, 59, 59, 999);
+                    break;
+                case 'yearly':
+                    startDate = new Date(now.getFullYear(), 0, 1);
+                    endDate = new Date(now.getFullYear(), 11, 31, 23, 59, 59, 999);
+                    break;
+                case 'monthly':
+                default:
+                    startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+                    endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+                    break;
+            }
+        }
+
+        // Prepare parameters
+        const params = [userId, startDate, endDate];
+
         // Get total income and expense
         const totalResult = await query(
-            `SELECT 
-        type,
-        SUM(amount) as total
-       FROM expenses
-       WHERE user_id = $1 AND is_deleted = false
-         AND date >= $2 AND date <= $3
-       GROUP BY type`,
-            [userId, start_date, end_date]
-        );
+            `SELECT type, SUM(amount) as total
+             FROM expenses
+             WHERE user_id = $1 AND is_deleted = false
+               AND date >= $2 AND date <= $3
+             GROUP BY type`, params);
 
-        // Get by category
+        // Get by category (for pie chart / distribution)
         const categoryResult = await query(
-            `SELECT 
-        e.type,
-        c.name as category_name,
-        c.color as category_color,
-        c.icon as category_icon,
-        SUM(e.amount) as total,
-        COUNT(e.id) as count
-       FROM expenses e
-       LEFT JOIN categories c ON e.category_id = c.id
-       WHERE e.user_id = $1 AND e.is_deleted = false
-         AND e.date >= $2 AND e.date <= $3
-       GROUP BY e.type, c.id, c.name, c.color, c.icon
-       ORDER BY total DESC`,
-            [userId, start_date, end_date]
-        );
+            `SELECT e.type, c.name as category_name, c.color as category_color, c.icon as category_icon,
+                    SUM(e.amount) as total, COUNT(e.id) as count
+             FROM expenses e
+             LEFT JOIN categories c ON e.category_id = c.id
+             WHERE e.user_id = $1 AND e.is_deleted = false
+               AND e.date >= $2 AND e.date <= $3
+             GROUP BY e.type, c.id, c.name, c.color, c.icon
+             ORDER BY total DESC`, params);
 
-        // Get daily trend
+        // Daily trend (for line chart)
         const trendResult = await query(
-            `SELECT 
-        DATE(date) as day,
-        type,
-        SUM(amount) as total
-       FROM expenses
-       WHERE user_id = $1 AND is_deleted = false
-         AND date >= $2 AND date <= $3
-       GROUP BY DATE(date), type
-       ORDER BY day ASC`,
-            [userId, start_date, end_date]
-        );
+            `SELECT DATE(date) as day, type, SUM(amount) as total
+             FROM expenses
+             WHERE user_id = $1 AND is_deleted = false
+               AND date >= $2 AND date <= $3
+             GROUP BY DATE(date), type
+             ORDER BY day ASC`, params);
+
+        // Build daily totals structure
+        const dailyMap = {};
+        trendResult.rows.forEach(r => {
+            const day = r.day.toISOString().split('T')[0];
+            if (!dailyMap[day]) dailyMap[day] = { income: 0, expense: 0 };
+            dailyMap[day][r.type] = parseFloat(r.total);
+        });
+        const dailyTotals = Object.entries(dailyMap).map(([day, v]) => ({ day, income: v.income, expense: v.expense }));
+
+        // Category totals for chart
+        const categoryTotals = categoryResult.rows.map(r => ({
+            type: r.type,
+            category: r.category_name,
+            color: r.category_color,
+            icon: r.category_icon,
+            total: parseFloat(r.total),
+            count: parseInt(r.count)
+        }));
 
         const totals = totalResult.rows.reduce((acc, row) => {
             acc[row.type] = parseFloat(row.total);
@@ -148,22 +185,19 @@ router.get('/statistics', async (req, res) => {
         res.json({
             success: true,
             data: {
+                range: { startDate, endDate, period },
                 summary: {
                     totalIncome: totals.income || 0,
                     totalExpense: totals.expense || 0,
                     balance: (totals.income || 0) - (totals.expense || 0)
                 },
-                byCategory: categoryResult.rows,
-                trend: trendResult.rows
+                categoryTotals,
+                dailyTotals
             }
         });
     } catch (error) {
         console.error('Get statistics error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Lỗi khi lấy thống kê',
-            error: error.message
-        });
+        res.status(500).json({ success: false, message: 'Lỗi khi lấy thống kê', error: error.message });
     }
 });
 
