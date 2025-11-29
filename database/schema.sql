@@ -186,3 +186,7 @@ CREATE TRIGGER update_events_updated_at BEFORE UPDATE ON events
 
 -- Note: Default categories will be automatically created when users register
 -- See routes/auth.js for the registration endpoint that creates default categories
+ALTER TABLE users ADD COLUMN otp_code VARCHAR(6);
+ALTER TABLE users ADD COLUMN otp_expires_at TIMESTAMP;
+-- Đảm bảo users có cột is_active mặc định là false nếu muốn bắt buộc OTP
+ALTER TABLE users ALTER COLUMN is_active SET DEFAULT false;

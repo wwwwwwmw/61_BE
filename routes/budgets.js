@@ -17,6 +17,28 @@ const budgetValidation = [
 // @route   GET /api/budgets
 // @desc    Get all budgets for user
 // @access  Private
+/**
+ * @swagger
+ * /api/budgets:
+ *   get:
+ *     summary: Lấy danh sách ngân sách
+ *     tags: [Budgets]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: query
+ *         name: is_active
+ *         schema: { type: boolean }
+ *     responses:
+ *       200:
+ *         description: Danh sách ngân sách
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 data: { type: array, items: { $ref: '#/components/schemas/Budget' } }
+ */
 router.get('/', async (req, res) => {
     try {
         const userId = req.user.id;
@@ -56,6 +78,31 @@ router.get('/', async (req, res) => {
 // @route   GET /api/budgets/:id
 // @desc    Get single budget
 // @access  Private
+/**
+ * @swagger
+ * /api/budgets/{id}:
+ *   get:
+ *     summary: Lấy chi tiết ngân sách
+ *     tags: [Budgets]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *     responses:
+ *       200:
+ *         description: Chi tiết ngân sách
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 data: { $ref: '#/components/schemas/Budget' }
+ *       404:
+ *         description: Không tìm thấy
+ */
 router.get('/:id', async (req, res) => {
     try {
         const userId = req.user.id;
@@ -78,8 +125,42 @@ router.get('/:id', async (req, res) => {
 });
 
 // @route   GET /api/budgets/:id/status
-// @desc    Get budget status with current spending (permanent deletion only; budgets do not support soft delete as schema lacks is_deleted)
+// @desc    Get budget status with current spending
 // @access  Private
+/**
+ * @swagger
+ * /api/budgets/{id}/status:
+ *   get:
+ *     summary: Lấy trạng thái chi tiêu của ngân sách
+ *     tags: [Budgets]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *     responses:
+ *       200:
+ *         description: Trạng thái ngân sách
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     budget: { $ref: '#/components/schemas/Budget' }
+ *                     spending:
+ *                       type: object
+ *                       properties:
+ *                         totalSpent: { type: number }
+ *                         budgetAmount: { type: number }
+ *                         remaining: { type: number }
+ *                         percentage: { type: string }
+ *                         isOverBudget: { type: boolean }
+ */
 router.get('/:id/status', async (req, res) => {
     try {
         const userId = req.user.id;
@@ -184,6 +265,38 @@ router.get('/:id/status', async (req, res) => {
 // @route   POST /api/budgets
 // @desc    Create new budget
 // @access  Private
+/**
+ * @swagger
+ * /api/budgets:
+ *   post:
+ *     summary: Tạo ngân sách mới
+ *     tags: [Budgets]
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [category_id, amount, period]
+ *             properties:
+ *               category_id: { type: integer }
+ *               amount: { type: number }
+ *               period: { type: string, enum: [daily, weekly, monthly, yearly] }
+ *               start_date: { type: string, format: date-time }
+ *               end_date: { type: string, format: date-time }
+ *               alert_threshold: { type: integer }
+ *     responses:
+ *       201:
+ *         description: Tạo thành công
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 data: { $ref: '#/components/schemas/Budget' }
+ */
 router.post('/', budgetValidation, async (req, res) => {
     try {
         const errors = validationResult(req);
@@ -231,6 +344,43 @@ router.post('/', budgetValidation, async (req, res) => {
 // @route   PUT /api/budgets/:id
 // @desc    Update budget
 // @access  Private
+/**
+ * @swagger
+ * /api/budgets/{id}:
+ *   put:
+ *     summary: Cập nhật ngân sách
+ *     tags: [Budgets]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               category_id: { type: integer }
+ *               amount: { type: number }
+ *               period: { type: string, enum: [daily, weekly, monthly, yearly] }
+ *               start_date: { type: string, format: date-time }
+ *               end_date: { type: string, format: date-time }
+ *               alert_threshold: { type: integer }
+ *               is_active: { type: boolean }
+ *     responses:
+ *       200:
+ *         description: Cập nhật thành công
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 data: { $ref: '#/components/schemas/Budget' }
+ */
 router.put('/:id', budgetValidation, async (req, res) => {
     try {
         const errors = validationResult(req);
@@ -289,6 +439,22 @@ router.put('/:id', budgetValidation, async (req, res) => {
 // @route   DELETE /api/budgets/:id
 // @desc    Delete budget
 // @access  Private
+/**
+ * @swagger
+ * /api/budgets/{id}:
+ *   delete:
+ *     summary: Xóa ngân sách
+ *     tags: [Budgets]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *     responses:
+ *       200:
+ *         description: Xóa thành công
+ */
 router.delete('/:id', async (req, res) => {
     try {
         const userId = req.user.id;

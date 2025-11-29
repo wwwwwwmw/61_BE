@@ -1,22 +1,9 @@
 const express = require('express');
-const { body, validationResult } = require('express-validator');
-const { query, getClient } = require('../config/database');
+const router = express.Router();
+const { pool } = require('../config/database');
 const { authenticateToken } = require('../middleware/auth');
 
-const router = express.Router();
-
-// All routes require authentication
-router.use(authenticateToken);
-
-// Validation rules
-const todoValidation = [
-    body('title').trim().notEmpty().withMessage('Tiêu đề không được để trống'),
-    body('priority').optional().isIn(['low', 'medium', 'high']).withMessage('Độ ưu tiên không hợp lệ')
-];
-
-// @route   GET /api/todos
-// @desc    Get all todos for user
-// @access  Private
+// 1. GET ALL (Lấy danh sách)
 /**
  * @swagger
  * /api/todos:
@@ -24,28 +11,6 @@ const todoValidation = [
  *     summary: Lấy danh sách công việc
  *     tags: [Todos]
  *     security: [{ bearerAuth: [] }]
- *     parameters:
- *       - in: query
- *         name: completed
- *         schema: { type: boolean }
- *       - in: query
- *         name: category_id
- *         schema: { type: integer }
- *       - in: query
- *         name: priority
- *         schema: { type: string, enum: [low, medium, high] }
- *       - in: query
- *         name: includeDeleted
- *         schema: { type: boolean }
- *       - in: query
- *         name: q
- *         schema: { type: string }
- *       - in: query
- *         name: limit
- *         schema: { type: integer, default: 50 }
- *       - in: query
- *         name: offset
- *         schema: { type: integer, default: 0 }
  *     responses:
  *       200:
  *         description: Danh sách công việc
@@ -55,134 +20,60 @@ const todoValidation = [
  *               type: object
  *               properties:
  *                 success: { type: boolean }
- *                 data:
- *                   type: array
- *                   items:
- *                     $ref: '#/components/schemas/Todo'
+ *                 data: { type: array, items: { $ref: '#/components/schemas/Todo' } }
  */
-router.get('/', async (req, res) => {
+router.get('/', authenticateToken, async (req, res) => {
     try {
-        const userId = req.user.id;
-        const {
-            completed,
-            category_id,
-            priority,
-            includeDeleted = false,
-            q,
-            limit = 50,
-            offset = 0
-        } = req.query;
-
-        let queryText = `
-      SELECT t.*, c.name as category_name, c.color as category_color
-      FROM todos t
-      LEFT JOIN categories c ON t.category_id = c.id
-      WHERE t.user_id = $1
-    `;
-        const params = [userId];
-        let paramIndex = 2;
-
-        // Filter by deleted status
-        if (includeDeleted !== 'true') {
-            queryText += ` AND t.is_deleted = false`;
-        }
-
-        // Filter by completion status
-        if (completed !== undefined) {
-            queryText += ` AND t.is_completed = $${paramIndex}`;
-            params.push(completed === 'true');
-            paramIndex++;
-        }
-
-        // Filter by category
-        if (category_id) {
-            queryText += ` AND t.category_id = $${paramIndex}`;
-            params.push(category_id);
-            paramIndex++;
-        }
-
-        // Filter by priority
-        if (priority) {
-            queryText += ` AND t.priority = $${paramIndex}`;
-            params.push(priority);
-            paramIndex++;
-        }
-
-                // Text search (title, description, tags partial)
-                if (q) {
-                        queryText += ` AND (
-                            LOWER(t.title) LIKE LOWER($${paramIndex}) OR
-                            LOWER(t.description) LIKE LOWER($${paramIndex}) OR
-                            EXISTS (
-                                SELECT 1 FROM unnest(t.tags) tag
-                                WHERE LOWER(tag) LIKE LOWER($${paramIndex})
-                            )
-                        )`;
-                        params.push(`%${q}%`);
-                        paramIndex++;
-                }
-
-                queryText += ' ORDER BY t.is_completed ASC, t.priority DESC, t.position ASC, t.created_at DESC';
-                queryText += ` LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
-                params.push(parseInt(limit, 10));
-                params.push(parseInt(offset, 10));
-
-        const result = await query(queryText, params);
-
-        res.json({
-            success: true,
-            data: result.rows
-        });
-    } catch (error) {
-        console.error('Get todos error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Lỗi khi lấy danh sách công việc',
-            error: error.message
-        });
-    }
-});
-
-// @route   GET /api/todos/:id
-// @desc    Get single todo
-// @access  Private
-router.get('/:id', async (req, res) => {
-    try {
-        const userId = req.user.id;
-        const todoId = req.params.id;
-
-        const result = await query(
-            `SELECT t.*, c.name as category_name, c.color as category_color
-       FROM todos t
-       LEFT JOIN categories c ON t.category_id = c.id
-       WHERE t.id = $1 AND t.user_id = $2`,
-            [todoId, userId]
+        const result = await pool.query(
+            'SELECT * FROM todos WHERE user_id = $1 AND is_deleted = false ORDER BY created_at DESC',
+            [req.user.id]
         );
-
-        if (result.rows.length === 0) {
-            return res.status(404).json({
-                success: false,
-                message: 'Không tìm thấy công việc'
-            });
-        }
-
-        res.json({
-            success: true,
-            data: result.rows[0]
-        });
-    } catch (error) {
-        console.error('Get todo error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Lỗi khi lấy thông tin công việc',
-            error: error.message
-        });
+        res.json({ success: true, data: result.rows });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
     }
 });
 
-// @route   POST /api/todos
-// @desc    Create new todo
-// @access  Private
+// 2. GET SINGLE (Chi tiết)
+/**
+ * @swagger
+ * /api/todos/{id}:
+ *   get:
+ *     summary: Lấy chi tiết công việc
+ *     tags: [Todos]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *     responses:
+ *       200:
+ *         description: Chi tiết công việc
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 data: { $ref: '#/components/schemas/Todo' }
+ *       404:
+ *         description: Không tìm thấy
+ */
+router.get('/:id', authenticateToken, async (req, res) => {
+    try {
+        const result = await pool.query(
+            'SELECT * FROM todos WHERE id = $1 AND user_id = $2',
+            [req.params.id, req.user.id]
+        );
+        if (result.rows.length === 0) return res.status(404).json({ success: false, message: 'Không tìm thấy' });
+        res.json({ success: true, data: result.rows[0] });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+// 3. POST (Thêm mới)
 /**
  * @swagger
  * /api/todos:
@@ -200,65 +91,36 @@ router.get('/:id', async (req, res) => {
  *             properties:
  *               title: { type: string }
  *               description: { type: string }
- *               priority: { type: string, enum: [low, medium, high] }
- *               category_id: { type: integer }
- *               tags: { type: array, items: { type: string } }
+ *               priority: { type: string, enum: ['low', 'medium', 'high'] }
  *               due_date: { type: string, format: date-time }
  *               reminder_time: { type: string, format: date-time }
- *               client_id: { type: string }
+ *               tags: { type: array, items: { type: string } }
+ *               category_id: { type: integer }
  *     responses:
- *       201:
+ *       200:
  *         description: Tạo thành công
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 data: { $ref: '#/components/schemas/Todo' }
  */
-router.post('/', todoValidation, async (req, res) => {
+router.post('/', authenticateToken, async (req, res) => {
+    const { title, description, priority, due_date, reminder_time, tags, category_id } = req.body;
     try {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) {
-            return res.status(400).json({
-                success: false,
-                errors: errors.array()
-            });
-        }
-
-        const userId = req.user.id;
-        const {
-            title,
-            description,
-            category_id,
-            priority = 'medium',
-            tags = [],
-            due_date,
-            reminder_time,
-            client_id
-        } = req.body;
-
-        const result = await query(
-            `INSERT INTO todos (
-        user_id, title, description, category_id, priority, 
-        tags, due_date, reminder_time, client_id, last_synced_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP)
-      RETURNING *`,
-            [userId, title, description, category_id, priority, tags, due_date, reminder_time, client_id]
+        const result = await pool.query(
+            'INSERT INTO todos (user_id, title, description, priority, due_date, reminder_time, tags, category_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
+            [req.user.id, title, description, priority, due_date, reminder_time, tags, category_id]
         );
-
-        res.status(201).json({
-            success: true,
-            message: 'Tạo công việc thành công',
-            data: result.rows[0]
-        });
-    } catch (error) {
-        console.error('Create todo error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Lỗi khi tạo công việc',
-            error: error.message
-        });
+        res.json({ success: true, data: result.rows[0] });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
     }
 });
 
-// @route   PUT /api/todos/:id
-// @desc    Update todo
-// @access  Private
+// 4. PUT (Sửa)
 /**
  * @swagger
  * /api/todos/{id}:
@@ -276,72 +138,47 @@ router.post('/', todoValidation, async (req, res) => {
  *       content:
  *         application/json:
  *           schema:
- *             $ref: '#/components/schemas/Todo'
+ *             type: object
+ *             properties:
+ *               title: { type: string }
+ *               description: { type: string }
+ *               priority: { type: string, enum: ['low', 'medium', 'high'] }
+ *               is_completed: { type: boolean }
+ *               due_date: { type: string, format: date-time }
+ *               reminder_time: { type: string, format: date-time }
+ *               tags: { type: array, items: { type: string } }
+ *               category_id: { type: integer }
  *     responses:
  *       200:
  *         description: Cập nhật thành công
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 data: { $ref: '#/components/schemas/Todo' }
  */
-router.put('/:id', todoValidation, async (req, res) => {
+router.put('/:id', authenticateToken, async (req, res) => {
+    const { title, description, priority, is_completed, due_date, reminder_time, tags, category_id } = req.body;
     try {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) {
-            return res.status(400).json({
-                success: false,
-                errors: errors.array()
-            });
-        }
-
-        const userId = req.user.id;
-        const todoId = req.params.id;
-        const {
-            title,
-            description,
-            category_id,
-            priority,
-            tags,
-            due_date,
-            reminder_time,
-            is_completed
-        } = req.body;
-
-        const result = await query(
+        const result = await pool.query(
             `UPDATE todos 
-       SET title = $1, description = $2, category_id = $3, 
-           priority = $4, tags = $5, due_date = $6, 
-           reminder_time = $7, is_completed = $8,
-           completed_at = CASE WHEN $8 = true THEN CURRENT_TIMESTAMP ELSE NULL END,
-           version = version + 1, last_synced_at = CURRENT_TIMESTAMP
-       WHERE id = $9 AND user_id = $10 AND is_deleted = false
-       RETURNING *`,
-            [title, description, category_id, priority, tags, due_date, reminder_time,
-                is_completed, todoId, userId]
+             SET title = $1, description = $2, priority = $3, is_completed = $4, 
+                 due_date = $5, reminder_time = $6, tags = $7, category_id = $8,
+                 updated_at = NOW() 
+             WHERE id = $9 AND user_id = $10 
+             RETURNING *`,
+            [title, description, priority, is_completed, due_date, reminder_time, tags, category_id, req.params.id, req.user.id]
         );
-
-        if (result.rows.length === 0) {
-            return res.status(404).json({
-                success: false,
-                message: 'Không tìm thấy công việc'
-            });
-        }
-
-        res.json({
-            success: true,
-            message: 'Cập nhật công việc thành công',
-            data: result.rows[0]
-        });
-    } catch (error) {
-        console.error('Update todo error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Lỗi khi cập nhật công việc',
-            error: error.message
-        });
+        if (result.rows.length === 0) return res.status(404).json({ success: false, message: 'Không tìm thấy hoặc không có quyền' });
+        res.json({ success: true, data: result.rows[0] });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
     }
 });
 
-// @route   PATCH /api/todos/:id/toggle
-// @desc    Toggle todo completion status
-// @access  Private
+// 5. PATCH (Toggle Complete)
 /**
  * @swagger
  * /api/todos/{id}/toggle:
@@ -352,57 +189,8 @@ router.put('/:id', todoValidation, async (req, res) => {
  *     parameters:
  *       - in: path
  *         name: id
- *         required: true
- *         schema: { type: integer }
- *     responses:
- *       200:
- *         description: Cập nhật trạng thái thành công
- */
-router.patch('/:id/toggle', async (req, res) => {
-    try {
-        const userId = req.user.id;
-        const todoId = req.params.id;
-
-        const result = await query(
-            `UPDATE todos 
-       SET is_completed = NOT is_completed,
-           completed_at = CASE WHEN is_completed = false THEN CURRENT_TIMESTAMP ELSE NULL END,
-           version = version + 1, last_synced_at = CURRENT_TIMESTAMP
-       WHERE id = $1 AND user_id = $2 AND is_deleted = false
-       RETURNING *`,
-            [todoId, userId]
-        );
-
-        if (result.rows.length === 0) {
-            return res.status(404).json({
-                success: false,
-                message: 'Không tìm thấy công việc'
-            });
-        }
-
-        res.json({
-            success: true,
-            message: 'Cập nhật trạng thái thành công',
-            data: result.rows[0]
-        });
-    } catch (error) {
-        console.error('Toggle todo error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Lỗi khi cập nhật trạng thái',
-            error: error.message
-        });
-    }
-});
-
-// @route   DELETE /api/todos/:id
-// @desc    Soft delete todo
-// @access  Private
-/**
- * @swagger
- * /api/todos/{id}:
  *   delete:
- *     summary: Xóa (mềm hoặc vĩnh viễn) công việc
+ *     summary: Xóa công việc (Soft delete)
  *     tags: [Todos]
  *     security: [{ bearerAuth: [] }]
  *     parameters:
@@ -410,175 +198,20 @@ router.patch('/:id/toggle', async (req, res) => {
  *         name: id
  *         required: true
  *         schema: { type: integer }
- *       - in: query
- *         name: permanent
- *         schema: { type: boolean }
  *     responses:
  *       200:
  *         description: Xóa thành công
  */
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', authenticateToken, async (req, res) => {
     try {
-        const userId = req.user.id;
-        const todoId = req.params.id;
-        const { permanent = false } = req.query;
-
-        let result;
-
-        if (permanent === 'true') {
-            // Permanent delete
-            result = await query(
-                'DELETE FROM todos WHERE id = $1 AND user_id = $2 RETURNING id',
-                [todoId, userId]
-            );
-        } else {
-            // Soft delete
-            result = await query(
-                `UPDATE todos 
-         SET is_deleted = true, deleted_at = CURRENT_TIMESTAMP,
-             version = version + 1, last_synced_at = CURRENT_TIMESTAMP
-         WHERE id = $1 AND user_id = $2
-         RETURNING id`,
-                [todoId, userId]
-            );
-        }
-
-        if (result.rows.length === 0) {
-            return res.status(404).json({
-                success: false,
-                message: 'Không tìm thấy công việc'
-            });
-        }
-
-        res.json({
-            success: true,
-            message: 'Xóa công việc thành công'
-        });
-    } catch (error) {
-        console.error('Delete todo error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Lỗi khi xóa công việc',
-            error: error.message
-        });
-    }
-});
-
-// @route   POST /api/todos/sync
-// @desc    Sync todos from client
-// @access  Private
-/**
- * @swagger
- * /api/todos/sync:
- *   post:
- *     summary: Đồng bộ danh sách công việc từ client
- *     tags: [Todos]
- *     security: [{ bearerAuth: [] }]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               lastSyncTime: { type: string, format: date-time }
- *               todos: { type: array, items: { $ref: '#/components/schemas/Todo' } }
- *     responses:
- *       200:
- *         description: Đồng bộ thành công
- */
-router.post('/sync', async (req, res) => {
-    const client = await getClient();
-
-    try {
-        await client.query('BEGIN');
-
-        const userId = req.user.id;
-        const { todos, lastSyncTime } = req.body;
-
-        // Get server changes since last sync
-        const serverChanges = await client.query(
-            `SELECT * FROM todos 
-       WHERE user_id = $1 AND last_synced_at > $2
-       ORDER BY last_synced_at ASC`,
-            [userId, lastSyncTime || '1970-01-01']
+        const result = await pool.query(
+            'UPDATE todos SET is_deleted = true, deleted_at = NOW() WHERE id = $1 AND user_id = $2 RETURNING id',
+            [req.params.id, req.user.id]
         );
-
-        // Process client changes
-        const conflicts = [];
-        const syncedTodos = [];
-
-        for (const todo of todos) {
-            if (todo.id) {
-                // Update existing
-                const existing = await client.query(
-                    'SELECT version FROM todos WHERE id = $1 AND user_id = $2',
-                    [todo.id, userId]
-                );
-
-                if (existing.rows.length > 0) {
-                    if (existing.rows[0].version > todo.version) {
-                        // Conflict: server version is newer
-                        conflicts.push({
-                            clientTodo: todo,
-                            serverTodo: existing.rows[0]
-                        });
-                    } else {
-                        // Client version is newer or same, update
-                        const result = await client.query(
-                            `UPDATE todos 
-               SET title = $1, description = $2, is_completed = $3,
-                   category_id = $4, priority = $5, tags = $6,
-                   due_date = $7, reminder_time = $8,
-                   version = $9, last_synced_at = CURRENT_TIMESTAMP
-               WHERE id = $10 AND user_id = $11
-               RETURNING *`,
-                            [todo.title, todo.description, todo.is_completed,
-                            todo.category_id, todo.priority, todo.tags,
-                            todo.due_date, todo.reminder_time, todo.version + 1,
-                            todo.id, userId]
-                        );
-                        syncedTodos.push(result.rows[0]);
-                    }
-                }
-            } else {
-                // Insert new
-                const result = await client.query(
-                    `INSERT INTO todos (
-            user_id, title, description, is_completed, category_id,
-            priority, tags, due_date, reminder_time, client_id,
-            last_synced_at
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP)
-          RETURNING *`,
-                    [userId, todo.title, todo.description, todo.is_completed,
-                        todo.category_id, todo.priority, todo.tags, todo.due_date,
-                        todo.reminder_time, todo.client_id]
-                );
-                syncedTodos.push(result.rows[0]);
-            }
-        }
-
-        await client.query('COMMIT');
-
-        res.json({
-            success: true,
-            data: {
-                serverChanges: serverChanges.rows,
-                syncedTodos,
-                conflicts,
-                syncTime: new Date().toISOString()
-            }
-        });
-    } catch (error) {
-        await client.query('ROLLBACK');
-        console.error('Sync error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Lỗi khi đồng bộ dữ liệu',
-            error: error.message
-        });
-    } finally {
-        client.release();
+        if (result.rows.length === 0) return res.status(404).json({ success: false, message: 'Lỗi khi xóa' });
+        res.json({ success: true, message: 'Đã xóa thành công' });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
     }
 });
 

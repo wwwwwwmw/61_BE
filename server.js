@@ -23,7 +23,7 @@ const { Server } = require('socket.io');
 const io = new Server(server, {
     cors: {
         origin: process.env.CORS_ORIGIN || '*',
-        methods: ['GET','POST','PUT','PATCH','DELETE']
+        methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']
     }
 });
 
@@ -151,6 +151,7 @@ const startServer = async (retries = 5) => {
                 console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
                 console.log(`📍 Local: http://localhost:${PORT}`);
                 console.log(`📱 LAN:   http://${process.env.DEVICE_IP || 'YOUR_PC_IP'}:${PORT}`);
+                console.log(`📄 API Docs: http://localhost:${PORT}/api-docs`);
                 console.log('');
                 console.log('✓ Ready to accept connections from mobile devices');
                 console.log('✓ Socket.io ready for real-time notifications');
