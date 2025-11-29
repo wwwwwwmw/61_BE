@@ -204,5 +204,37 @@ router.get('/statistics', async (req, res) => {
         res.status(500).json({ success: false, message: error.message });
     }
 });
+// @route   POST /api/expenses/sync
+// @desc    Đồng bộ dữ liệu chi tiêu
+router.post('/sync', async (req, res) => {
+    const client = await require('../config/database').pool.connect();
+    try {
+        await client.query('BEGIN');
+        const userId = req.user.id;
+        const { expenses, lastSyncTime } = req.body;
+
+        // 1. Lấy thay đổi từ Server
+        const serverChangesRes = await client.query(
+            `SELECT * FROM expenses WHERE user_id = $1 AND updated_at > $2`,
+            [userId, lastSyncTime || '1970-01-01']
+        );
+
+        await client.query('COMMIT');
+
+        res.json({
+            success: true,
+            data: {
+                serverChanges: serverChangesRes.rows,
+                syncTime: new Date().toISOString()
+            }
+        });
+    } catch (error) {
+        await client.query('ROLLBACK');
+        console.error('Sync Expenses Error:', error);
+        res.status(500).json({ success: false, message: error.message });
+    } finally {
+        client.release();
+    }
+});
 
 module.exports = router;

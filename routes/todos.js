@@ -108,5 +108,43 @@ router.delete('/:id', async (req, res) => {
         res.status(500).json({ success: false, message: err.message });
     }
 });
+// @route   POST /api/todos/sync
+// @desc    Đồng bộ dữ liệu 2 chiều (Client <-> Server)
+router.post('/sync', async (req, res) => {
+    const client = await require('../config/database').pool.connect();
+    try {
+        await client.query('BEGIN');
+        const userId = req.user.id;
+        const { todos, lastSyncTime } = req.body;
+
+        // 1. Lấy dữ liệu thay đổi từ Server (để trả về cho Client)
+        // Tìm các bản ghi có updated_at mới hơn thời điểm Client sync lần cuối
+        const serverChangesRes = await client.query(
+            `SELECT * FROM todos WHERE user_id = $1 AND updated_at > $2`,
+            [userId, lastSyncTime || '1970-01-01']
+        );
+
+        // 2. Xử lý dữ liệu từ Client gửi lên (nếu có conflict)
+        // (Lưu ý: App hiện tại đã đẩy từng item qua API POST/PUT rồi, 
+        // API này chủ yếu để Client kéo data mới về. 
+        // Nhưng nếu muốn xử lý conflict batch, ta có thể code thêm tại đây)
+
+        await client.query('COMMIT');
+
+        res.json({
+            success: true,
+            data: {
+                serverChanges: serverChangesRes.rows, // Trả về danh sách cần update dưới App
+                syncTime: new Date().toISOString()
+            }
+        });
+    } catch (error) {
+        await client.query('ROLLBACK');
+        console.error('Sync Todos Error:', error);
+        res.status(500).json({ success: false, message: error.message });
+    } finally {
+        client.release();
+    }
+});
 
 module.exports = router;
