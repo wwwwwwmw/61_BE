@@ -3,10 +3,10 @@ const cors = require('cors');
 const helmet = require('helmet');
 const compression = require('compression');
 const http = require('http');
-const fs = require('fs'); // [NEW] Thêm thư viện đọc file
-const path = require('path'); // [NEW] Thêm thư viện xử lý đường dẫn
+const fs = require('fs');
+const path = require('path');
 const { Server } = require('socket.io');
-const { pool } = require('./config/database');
+const { pool } = require('./config/database'); // Import pool kết nối DB
 require('dotenv').config();
 
 // Routes Imports
@@ -40,10 +40,10 @@ app.use((req, res, next) => {
     next();
 });
 
-// Swagger
+// Swagger Setup
 try {
     const { swaggerUi, swaggerSpec } = require('./swagger');
-    app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, { explorer: true }));
+    app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
     console.log('📄 Swagger UI: /api-docs');
 } catch (e) {
     console.warn('Swagger not initialized:', e.message);
@@ -51,8 +51,8 @@ try {
 
 // Socket Connection
 io.on('connection', (socket) => {
-    console.log('🔌 Socket connected:', socket.id);
-    socket.on('disconnect', () => console.log('🔌 Socket disconnected:', socket.id));
+    console.log(`🔌 Socket connected: ${socket.id}`);
+    socket.on('disconnect', () => console.log(`🔌 Socket disconnected: ${socket.id}`));
 });
 
 // Health Check
@@ -74,8 +74,11 @@ app.use('/api/categories', categoryRoutes);
 app.use('/api/budgets', budgetRoutes);
 
 // --- REMINDER SCANNER (CRON JOB) ---
+// Quét DB mỗi phút để tìm công việc/sự kiện cần báo
 const scanReminders = async () => {
     try {
+        // 1. Query Todos (Nhắc nhở công việc)
+        // Tìm các task có reminder_time trong khoảng [NOW, NOW + 1 phút]
         const todoQuery = `
             SELECT id, title, reminder_time, user_id FROM todos 
             WHERE reminder_time IS NOT NULL 
@@ -84,6 +87,7 @@ const scanReminders = async () => {
             AND is_completed = false AND is_deleted = false
         `;
 
+        // 2. Query Events (Sự kiện sắp diễn ra)
         const eventQuery = `
             SELECT id, title, event_date, user_id FROM events 
             WHERE event_date >= NOW() 
@@ -91,27 +95,34 @@ const scanReminders = async () => {
             AND is_deleted = false
         `;
 
+        // Chạy song song
         const [todosRes, eventsRes] = await Promise.all([
             pool.query(todoQuery),
             pool.query(eventQuery)
         ]);
 
+        if (todosRes.rows.length > 0 || eventsRes.rows.length > 0) {
+            console.log(`⏰ Found ${todosRes.rows.length} todos, ${eventsRes.rows.length} events to remind.`);
+        }
+
+        // Gửi thông báo Todo
         todosRes.rows.forEach(t => {
             console.log(`🔔 Sending Todo Reminder: ${t.title}`);
             io.emit('todo_reminder', {
                 id: t.id,
-                title: t.title,
-                message: `Đến hạn công việc: ${t.title}`,
+                title: "Nhắc nhở công việc",
+                message: `Đến hạn: ${t.title}`,
                 time: t.reminder_time
             });
         });
 
+        // Gửi thông báo Event
         eventsRes.rows.forEach(e => {
             console.log(`🎉 Sending Event Alert: ${e.title}`);
             io.emit('event_due', {
                 id: e.id,
-                title: e.title,
-                message: `Sự kiện diễn ra ngay bây giờ: ${e.title}`,
+                title: "Sự kiện sắp diễn ra",
+                message: `Sự kiện: ${e.title}`,
                 time: e.event_date
             });
         });
@@ -121,18 +132,16 @@ const scanReminders = async () => {
     }
 };
 
-// [UPDATED] FUNCTION KHỞI TẠO DATABASE (AN TOÀN)
+// [FUNCTION KHỞI TẠO DATABASE]
 const initializeDatabase = async () => {
     try {
         const schemaPath = path.join(__dirname, 'database', 'schema.sql');
 
         if (fs.existsSync(schemaPath)) {
-            console.log('🔄 Đang kiểm tra và cập nhật cấu trúc database...');
+            console.log('🔄 Đang kiểm tra cấu trúc database...');
             const schema = fs.readFileSync(schemaPath, 'utf8');
-
             await pool.query(schema);
-
-            console.log('✅ Cấu trúc Database đã sẵn sàng (Dữ liệu cũ được bảo toàn)!');
+            console.log('✅ Database đã sẵn sàng!');
         } else {
             console.warn(`⚠️ Không tìm thấy file schema tại: ${schemaPath}`);
         }
@@ -141,49 +150,37 @@ const initializeDatabase = async () => {
     }
 };
 
-// [UPDATED] Start Server với Database Init
+// Start Server
 const startServer = async (retries = 5) => {
     for (let attempt = 1; attempt <= retries; attempt++) {
         try {
             await pool.query('SELECT 1');
             console.log('✅ Kết nối Database thành công');
 
-            // --- GỌI HÀM INIT DATABASE Ở ĐÂY ---
-            // Mặc định chạy mỗi lần start. 
-            // Nếu muốn an toàn hơn, hãy bọc trong điều kiện: if (process.env.RESET_DB === 'true') { ... }
             await initializeDatabase();
-            // ------------------------------------
 
-            // Bắt đầu scanner
+            // Bắt đầu quét nhắc nhở mỗi 60 giây
             setInterval(scanReminders, 60000);
 
-            server.listen(PORT, HOST, () => {
+            const PORT = process.env.PORT || 3000;
+            server.listen(PORT, '0.0.0.0', () => {
                 console.log('');
                 console.log('╔════════════════════════════════════════════╗');
                 console.log('║   Personal Utility API Server              ║');
                 console.log('╚════════════════════════════════════════════╝');
                 console.log('');
                 console.log(`🚀 Server running on port ${PORT}`);
-                console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-                console.log(`📍 Local: http://localhost:${PORT}`);
-                console.log(`📄 API Docs: http://localhost:${PORT}/api-docs`);
+                console.log(`🌍 Local: http://localhost:${PORT}`);
                 console.log('');
             });
             return;
         } catch (err) {
             console.error(`DB connection failed (attempt ${attempt}/${retries}):`, err.message);
-            if (attempt === retries) {
-                console.error('Exhausted retries. Exiting.');
-                process.exit(1);
-            }
+            if (attempt === retries) process.exit(1);
             await new Promise(r => setTimeout(r, 2000));
         }
     }
 };
-
-// Config Host & Port
-const PORT = process.env.PORT || 3000;
-const HOST = '0.0.0.0';
 
 startServer();
 

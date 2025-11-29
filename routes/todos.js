@@ -1,25 +1,15 @@
 const express = require('express');
 const router = express.Router();
-const { query } = require('../config/database');
+const { query, pool } = require('../config/database'); // Import cả pool để dùng cho transaction sync
 const { authenticateToken } = require('../middleware/auth');
 
 router.use(authenticateToken);
 
 // 1. GET ALL (Hỗ trợ lọc theo Tag)
-/**
- * @swagger
- * /api/todos:
- * get:
- * parameters:
- * - in: query
- * name: tag
- * schema: { type: string }
- * description: Lọc theo tên tag
- */
 router.get('/', async (req, res) => {
     try {
         const userId = req.user.id;
-        const { tag, completed } = req.query; // tag='work'
+        const { tag, completed } = req.query;
 
         let sql = `SELECT * FROM todos WHERE user_id = $1 AND is_deleted = false`;
         const params = [userId];
@@ -63,7 +53,6 @@ router.get('/:id', async (req, res) => {
 router.post('/', async (req, res) => {
     const { title, description, priority, due_date, reminder_time, tags, category_id } = req.body;
     try {
-        // tags phải là mảng strings ["work", "urgent"]
         const result = await query(
             `INSERT INTO todos (user_id, title, description, priority, due_date, reminder_time, tags, category_id) 
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
@@ -79,11 +68,19 @@ router.post('/', async (req, res) => {
 router.put('/:id', async (req, res) => {
     const { title, description, priority, is_completed, due_date, reminder_time, tags, category_id } = req.body;
     try {
+        // Dynamic update query
+        // Cập nhật các trường nếu chúng có tồn tại trong body, nếu không giữ nguyên giá trị cũ (COALESCE)
         const result = await query(
-            `UPDATE todos 
-             SET title = $1, description = $2, priority = $3, is_completed = $4, 
-                 due_date = $5, reminder_time = $6, tags = $7, category_id = $8,
-                 updated_at = NOW() 
+            `UPDATE todos SET 
+                title = COALESCE($1, title),
+                description = COALESCE($2, description),
+                priority = COALESCE($3, priority),
+                is_completed = COALESCE($4, is_completed),
+                due_date = COALESCE($5, due_date),
+                reminder_time = COALESCE($6, reminder_time),
+                tags = COALESCE($7, tags),
+                category_id = COALESCE($8, category_id),
+                updated_at = NOW() 
              WHERE id = $9 AND user_id = $10 
              RETURNING *`,
             [title, description, priority, is_completed, due_date, reminder_time, tags, category_id, req.params.id, req.user.id]
@@ -108,33 +105,28 @@ router.delete('/:id', async (req, res) => {
         res.status(500).json({ success: false, message: err.message });
     }
 });
-// @route   POST /api/todos/sync
-// @desc    Đồng bộ dữ liệu 2 chiều (Client <-> Server)
+
+// 6. SYNC ROUTE (Đồng bộ dữ liệu)
 router.post('/sync', async (req, res) => {
-    const client = await require('../config/database').pool.connect();
+    // Sử dụng pool.connect() để tạo transaction an toàn
+    const client = await pool.connect();
     try {
         await client.query('BEGIN');
         const userId = req.user.id;
-        const { todos, lastSyncTime } = req.body;
+        const { lastSyncTime } = req.body;
 
-        // 1. Lấy dữ liệu thay đổi từ Server (để trả về cho Client)
-        // Tìm các bản ghi có updated_at mới hơn thời điểm Client sync lần cuối
+        // Lấy dữ liệu thay đổi từ Server (để trả về cho Client)
         const serverChangesRes = await client.query(
             `SELECT * FROM todos WHERE user_id = $1 AND updated_at > $2`,
             [userId, lastSyncTime || '1970-01-01']
         );
-
-        // 2. Xử lý dữ liệu từ Client gửi lên (nếu có conflict)
-        // (Lưu ý: App hiện tại đã đẩy từng item qua API POST/PUT rồi, 
-        // API này chủ yếu để Client kéo data mới về. 
-        // Nhưng nếu muốn xử lý conflict batch, ta có thể code thêm tại đây)
 
         await client.query('COMMIT');
 
         res.json({
             success: true,
             data: {
-                serverChanges: serverChangesRes.rows, // Trả về danh sách cần update dưới App
+                serverChanges: serverChangesRes.rows,
                 syncTime: new Date().toISOString()
             }
         });
