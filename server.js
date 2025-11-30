@@ -73,60 +73,113 @@ app.use('/api/events', eventRoutes);
 app.use('/api/categories', categoryRoutes);
 app.use('/api/budgets', budgetRoutes);
 
-// --- REMINDER SCANNER (CRON JOB) ---
-// Quét DB mỗi phút để tìm công việc/sự kiện cần báo
+// --- REMINDER / DEADLINE SCANNER (CRON JOB) ---
+// Quét DB mỗi phút để tìm:
+//  - Todos đến giờ reminder_time
+//  - Todos sắp tới hạn (due_date trong vòng 1 phút tới, chưa hoàn thành)
+//  - Events sắp diễn ra (event_date trong vòng 1 phút tới)
 const scanReminders = async () => {
     try {
-        // 1. Query Todos (Nhắc nhở công việc)
-        // Tìm các task có reminder_time trong khoảng [NOW, NOW + 1 phút]
-        const todoQuery = `
-            SELECT id, title, reminder_time, user_id FROM todos 
-            WHERE reminder_time IS NOT NULL 
-            AND reminder_time >= NOW() 
-            AND reminder_time < NOW() + INTERVAL '1 minute'
-            AND is_completed = false AND is_deleted = false
+        // Reminder cho công việc (reminder_time)
+        const todoReminderQuery = `
+            SELECT id, title, reminder_time FROM todos
+            WHERE reminder_time IS NOT NULL
+              AND reminder_time >= NOW()
+              AND reminder_time < NOW() + INTERVAL '1 minute'
+              AND is_completed = false AND is_deleted = false
         `;
 
-        // 2. Query Events (Sự kiện sắp diễn ra)
+        // Các công việc chuẩn bị đến hạn chót (due_date)
+        const todoDeadlineQuery = `
+            SELECT id, title, due_date FROM todos
+            WHERE due_date IS NOT NULL
+              AND due_date >= NOW()
+              AND due_date < NOW() + INTERVAL '1 minute'
+              AND is_completed = false AND is_deleted = false
+        `;
+
+        // Sự kiện sắp diễn ra
         const eventQuery = `
-            SELECT id, title, event_date, user_id FROM events 
-            WHERE event_date >= NOW() 
-            AND event_date < NOW() + INTERVAL '1 minute'
-            AND is_deleted = false
+            SELECT id, title, event_date, is_recurring, recurrence_pattern FROM events
+            WHERE event_date >= NOW()
+              AND event_date < NOW() + INTERVAL '1 minute'
+              AND is_deleted = false
         `;
 
-        // Chạy song song
-        const [todosRes, eventsRes] = await Promise.all([
-            pool.query(todoQuery),
+        const [todoReminderRes, todoDeadlineRes, eventsRes] = await Promise.all([
+            pool.query(todoReminderQuery),
+            pool.query(todoDeadlineQuery),
             pool.query(eventQuery)
         ]);
 
-        if (todosRes.rows.length > 0 || eventsRes.rows.length > 0) {
-            console.log(`⏰ Found ${todosRes.rows.length} todos, ${eventsRes.rows.length} events to remind.`);
+        if (todoReminderRes.rows.length) {
+            console.log(`🔔 Todo reminders: ${todoReminderRes.rows.length}`);
+        }
+        if (todoDeadlineRes.rows.length) {
+            console.log(`⏰ Todo deadlines: ${todoDeadlineRes.rows.length}`);
+        }
+        if (eventsRes.rows.length) {
+            console.log(`🎉 Event alerts: ${eventsRes.rows.length}`);
         }
 
-        // Gửi thông báo Todo
-        todosRes.rows.forEach(t => {
-            console.log(`🔔 Sending Todo Reminder: ${t.title}`);
+        // Emit reminder events
+        todoReminderRes.rows.forEach(t => {
             io.emit('todo_reminder', {
                 id: t.id,
-                title: "Nhắc nhở công việc",
-                message: `Đến hạn: ${t.title}`,
+                title: 'Nhắc nhở công việc',
+                message: `Nhắc nhở: ${t.title}`,
                 time: t.reminder_time
             });
         });
 
-        // Gửi thông báo Event
-        eventsRes.rows.forEach(e => {
-            console.log(`🎉 Sending Event Alert: ${e.title}`);
-            io.emit('event_due', {
-                id: e.id,
-                title: "Sự kiện sắp diễn ra",
-                message: `Sự kiện: ${e.title}`,
-                time: e.event_date
+        // Emit deadline events
+        todoDeadlineRes.rows.forEach(t => {
+            io.emit('todo_deadline', {
+                id: t.id,
+                title: 'Công việc đến hạn',
+                message: `Công việc "${t.title}" đã đến hạn chót!`,
+                time: t.due_date
             });
         });
 
+        // Emit event due notifications
+        for (const e of eventsRes.rows) {
+            io.emit('event_due', {
+                id: e.id,
+                title: 'Sự kiện sắp diễn ra',
+                message: `Sự kiện: ${e.title}`,
+                time: e.event_date
+            });
+
+            // Auto-advance recurring events after due
+            if (e.is_recurring) {
+                let interval = null;
+                switch (e.recurrence_pattern) {
+                    case 'daily':
+                        interval = "INTERVAL '1 day'";
+                        break;
+                    case 'weekly':
+                        interval = "INTERVAL '1 week'";
+                        break;
+                    case 'monthly':
+                        interval = "INTERVAL '1 month'";
+                        break;
+                    case 'yearly':
+                        interval = "INTERVAL '1 year'";
+                        break;
+                }
+                if (interval) {
+                    try {
+                        await pool.query(
+                            `UPDATE events SET event_date = event_date + ${interval}, updated_at = NOW() WHERE id = $1`,
+                            [e.id]
+                        );
+                    } catch (advErr) {
+                        console.error('Advance recurring event failed:', advErr.message);
+                    }
+                }
+            }
+        }
     } catch (err) {
         console.error('Scan Error:', err.message);
     }

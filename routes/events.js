@@ -9,7 +9,11 @@ router.use(authenticateToken);
 
 const eventValidation = [
     body('title').trim().notEmpty().withMessage('Tiêu đề không được để trống'),
-    body('event_date').isISO8601().withMessage('Ngày sự kiện không hợp lệ')
+    body('event_date').isISO8601().withMessage('Ngày sự kiện không hợp lệ'),
+    body('recurrence_pattern')
+        .optional()
+        .isIn(['daily', 'weekly', 'monthly', 'yearly'])
+        .withMessage('Kiểu lặp lại không hợp lệ')
 ];
 
 // @route   GET /api/events
@@ -72,12 +76,22 @@ router.post('/', eventValidation, async (req, res) => {
         if (!errors.isEmpty()) return res.status(400).json({ success: false, errors: errors.array() });
 
         const userId = req.user.id;
-        const { title, description, event_date, event_type, color, is_recurring, notification_enabled } = req.body;
+        const { title, description, event_date, event_type, color, is_recurring, notification_enabled, recurrence_pattern } = req.body;
 
         const result = await query(
-            `INSERT INTO events (user_id, title, description, event_date, event_type, color, is_recurring, notification_enabled)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-            [userId, title, description, event_date, event_type, color || '#3498db', is_recurring || false, notification_enabled || true]
+            `INSERT INTO events (user_id, title, description, event_date, event_type, color, is_recurring, recurrence_pattern, notification_enabled)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+            [
+                userId,
+                title,
+                description,
+                event_date,
+                event_type,
+                color || '#3498db',
+                !!is_recurring,
+                recurrence_pattern || null,
+                notification_enabled ?? true
+            ]
         );
 
         res.status(201).json({ success: true, data: result.rows[0] });
@@ -89,13 +103,24 @@ router.post('/', eventValidation, async (req, res) => {
 // @route   PUT /api/events/:id
 router.put('/:id', async (req, res) => {
     try {
-        const { title, description, event_date, event_type, color, is_recurring, notification_enabled } = req.body;
+        const { title, description, event_date, event_type, color, is_recurring, recurrence_pattern, notification_enabled } = req.body;
         const result = await query(
             `UPDATE events 
              SET title = $1, description = $2, event_date = $3, event_type = $4, 
-                 color = $5, is_recurring = $6, notification_enabled = $7, updated_at = NOW()
-             WHERE id = $8 AND user_id = $9 RETURNING *`,
-            [title, description, event_date, event_type, color, is_recurring, notification_enabled, req.params.id, req.user.id]
+                 color = $5, is_recurring = $6, recurrence_pattern = $7, notification_enabled = $8, updated_at = NOW()
+             WHERE id = $9 AND user_id = $10 RETURNING *`,
+            [
+                title,
+                description,
+                event_date,
+                event_type,
+                color,
+                !!is_recurring,
+                recurrence_pattern || null,
+                notification_enabled ?? true,
+                req.params.id,
+                req.user.id
+            ]
         );
         if (result.rows.length === 0) return res.status(404).json({ success: false, message: 'Not found' });
         res.json({ success: true, data: result.rows[0] });
