@@ -22,13 +22,20 @@ router.get('/', async (req, res) => {
         const userId = req.user.id;
         const { event_type, upcoming, includeDeleted } = req.query;
 
+        // Luôn so sánh theo giờ Việt Nam (Asia/Ho_Chi_Minh)
+        const nowTz = "NOW() AT TIME ZONE 'Asia/Ho_Chi_Minh'";
         let queryText = `
-            SELECT *,
-            CASE 
-                WHEN event_date > CURRENT_TIMESTAMP THEN
-                    EXTRACT(EPOCH FROM (event_date - CURRENT_TIMESTAMP))
-                ELSE 0
-            END as seconds_remaining
+            SELECT 
+                id, user_id, title, description,
+                -- Chuẩn hóa event_date về giờ VN để trả ra client
+                (event_date AT TIME ZONE 'Asia/Ho_Chi_Minh') AS event_date,
+                event_type, color, is_recurring, recurrence_pattern, notification_enabled,
+                created_at, updated_at, deleted_at, is_deleted,
+                CASE 
+                    WHEN event_date > ${nowTz} THEN
+                        EXTRACT(EPOCH FROM (event_date - ${nowTz}))
+                    ELSE 0
+                END as seconds_remaining
             FROM events
             WHERE user_id = $1
         `;
@@ -43,7 +50,7 @@ router.get('/', async (req, res) => {
             params.push(event_type);
         }
         if (upcoming === 'true') {
-            queryText += ` AND event_date > CURRENT_TIMESTAMP`;
+            queryText += ` AND event_date > ${nowTz}`;
         }
 
         queryText += ` ORDER BY event_date ASC`;
@@ -59,7 +66,12 @@ router.get('/', async (req, res) => {
 router.get('/:id', async (req, res) => {
     try {
         const result = await query(
-            `SELECT * FROM events WHERE id = $1 AND user_id = $2`,
+            `SELECT 
+                id, user_id, title, description,
+                (event_date AT TIME ZONE 'Asia/Ho_Chi_Minh') AS event_date,
+                event_type, color, is_recurring, recurrence_pattern, notification_enabled,
+                created_at, updated_at, deleted_at, is_deleted
+             FROM events WHERE id = $1 AND user_id = $2`,
             [req.params.id, req.user.id]
         );
         if (result.rows.length === 0) return res.status(404).json({ success: false, message: 'Not found' });
@@ -78,9 +90,10 @@ router.post('/', eventValidation, async (req, res) => {
         const userId = req.user.id;
         const { title, description, event_date, event_type, color, is_recurring, notification_enabled, recurrence_pattern } = req.body;
 
-        const result = await query(
+        // Lưu event_date như giờ địa phương VN: bỏ timezone để tránh lệch
+        let result = await query(
             `INSERT INTO events (user_id, title, description, event_date, event_type, color, is_recurring, recurrence_pattern, notification_enabled)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+             VALUES ($1, $2, $3, CAST($4 AS timestamp), $5, $6, $7, $8, $9) RETURNING *`,
             [
                 userId,
                 title,
@@ -93,8 +106,14 @@ router.post('/', eventValidation, async (req, res) => {
                 notification_enabled ?? true
             ]
         );
-
-        res.status(201).json({ success: true, data: result.rows[0] });
+        // Chuẩn hóa event_date sang giờ VN trong phản hồi
+        const row = result.rows[0];
+        const normalized = await query(
+            `SELECT (event_date AT TIME ZONE 'Asia/Ho_Chi_Minh') AS event_date FROM events WHERE id = $1`,
+            [row.id]
+        );
+        row.event_date = normalized.rows[0].event_date;
+        res.status(201).json({ success: true, data: row });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
@@ -104,9 +123,9 @@ router.post('/', eventValidation, async (req, res) => {
 router.put('/:id', async (req, res) => {
     try {
         const { title, description, event_date, event_type, color, is_recurring, recurrence_pattern, notification_enabled } = req.body;
-        const result = await query(
+        let result = await query(
             `UPDATE events 
-             SET title = $1, description = $2, event_date = $3, event_type = $4, 
+             SET title = $1, description = $2, event_date = CAST($3 AS timestamp), event_type = $4, 
                  color = $5, is_recurring = $6, recurrence_pattern = $7, notification_enabled = $8, updated_at = NOW()
              WHERE id = $9 AND user_id = $10 RETURNING *`,
             [
@@ -123,7 +142,13 @@ router.put('/:id', async (req, res) => {
             ]
         );
         if (result.rows.length === 0) return res.status(404).json({ success: false, message: 'Not found' });
-        res.json({ success: true, data: result.rows[0] });
+        const row = result.rows[0];
+        const normalized = await query(
+            `SELECT (event_date AT TIME ZONE 'Asia/Ho_Chi_Minh') AS event_date FROM events WHERE id = $1`,
+            [row.id]
+        );
+        row.event_date = normalized.rows[0].event_date;
+        res.json({ success: true, data: row });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }

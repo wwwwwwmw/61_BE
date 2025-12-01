@@ -9,6 +9,9 @@ const { Server } = require('socket.io');
 const { pool } = require('./config/database'); // Import pool kết nối DB
 require('dotenv').config();
 
+// Set Node process timezone to GMT+7 (Vietnam)
+process.env.TZ = 'Asia/Ho_Chi_Minh';
+
 // Routes Imports
 const authRoutes = require('./routes/auth');
 const todoRoutes = require('./routes/todos');
@@ -81,30 +84,33 @@ app.use('/api/budgets', budgetRoutes);
 const scanReminders = async () => {
     try {
         // Reminder cho công việc (reminder_time)
-        const todoReminderQuery = `
+          const nowTz = "NOW() AT TIME ZONE 'Asia/Ho_Chi_Minh'";
+          const todoReminderQuery = `
             SELECT id, title, reminder_time FROM todos
             WHERE reminder_time IS NOT NULL
-              AND reminder_time >= NOW()
-              AND reminder_time < NOW() + INTERVAL '1 minute'
+              AND reminder_time <= ${nowTz}
+              AND reminder_time > ${nowTz} - INTERVAL '1 minute'
               AND is_completed = false AND is_deleted = false
         `;
 
         // Các công việc chuẩn bị đến hạn chót (due_date)
-        const todoDeadlineQuery = `
+          const todoDeadlineQuery = `
             SELECT id, title, due_date FROM todos
             WHERE due_date IS NOT NULL
-              AND due_date >= NOW()
-              AND due_date < NOW() + INTERVAL '1 minute'
+              AND due_date <= ${nowTz}
+              AND due_date > ${nowTz} - INTERVAL '1 minute'
               AND is_completed = false AND is_deleted = false
         `;
 
         // Sự kiện sắp diễn ra
-        const eventQuery = `
-            SELECT id, title, event_date, is_recurring, recurrence_pattern FROM events
-            WHERE event_date >= NOW()
-              AND event_date < NOW() + INTERVAL '1 minute'
-              AND is_deleted = false
-        `;
+                // Thông báo đúng thời điểm (không sớm 1 phút):
+                // Chọn sự kiện vừa đến hạn trong vòng 1 phút trở lại đây.
+                const eventQuery = `
+                        SELECT id, title, event_date, is_recurring, recurrence_pattern FROM events
+                        WHERE event_date <= ${nowTz}
+                            AND event_date > ${nowTz} - INTERVAL '1 minute'
+                            AND is_deleted = false
+                `;
 
         const [todoReminderRes, todoDeadlineRes, eventsRes] = await Promise.all([
             pool.query(todoReminderQuery),

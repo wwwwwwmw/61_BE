@@ -238,3 +238,83 @@ router.post('/sync', async (req, res) => {
 });
 
 module.exports = router;
+// --- MISSING ROUTES ADDED BELOW ---
+
+// @route   PUT /api/expenses/:id
+// @desc    Cập nhật khoản thu/chi
+router.put('/:id', [
+    body('amount').optional().isFloat({ min: 0.01 }).withMessage('Số tiền không hợp lệ'),
+    body('type').optional().isIn(['income', 'expense']).withMessage('Loại không hợp lệ'),
+    body('category_id').optional().isInt().withMessage('Danh mục không hợp lệ')
+], async (req, res) => {
+    try {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) return res.status(400).json({ success: false, errors: errors.array() });
+
+        const userId = req.user.id;
+        const expenseId = req.params.id;
+        const { amount, type, category_id, description, date, payment_method } = req.body;
+
+        // Lấy bản ghi cũ để so sánh ngân sách nếu cần
+        const oldRes = await query(
+            'SELECT * FROM expenses WHERE id = $1 AND user_id = $2 AND is_deleted = false',
+            [expenseId, userId]
+        );
+        if (oldRes.rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Không tìm thấy giao dịch' });
+        }
+        const oldExpense = oldRes.rows[0];
+
+        const updateRes = await query(
+            `UPDATE expenses SET
+              amount = COALESCE($1, amount),
+              type = COALESCE($2, type),
+              category_id = COALESCE($3, category_id),
+              description = COALESCE($4, description),
+              date = COALESCE($5, date),
+              payment_method = COALESCE($6, payment_method),
+              updated_at = NOW()
+             WHERE id = $7 AND user_id = $8 AND is_deleted = false
+             RETURNING *`,
+            [amount, type, category_id, description, date, payment_method, expenseId, userId]
+        );
+
+        const updated = updateRes.rows[0];
+
+        let budgetAlert = null;
+        // Chỉ kiểm tra ngân sách nếu type là expense và amount thay đổi
+        if ((updated.type === 'expense') && amount != null && updated.category_id) {
+            budgetAlert = await checkBudgetOverflow(userId, updated.category_id, updated.amount);
+        }
+
+        res.json({ success: true, data: updated, budgetAlert });
+    } catch (error) {
+        console.error('Update expense error:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// @route   DELETE /api/expenses/:id
+// @desc    Xóa mềm hoặc vĩnh viễn khoản thu/chi
+router.delete('/:id', async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const expenseId = req.params.id;
+        const permanent = req.query.permanent === 'true';
+
+        let sql;
+        if (permanent) {
+            sql = 'DELETE FROM expenses WHERE id = $1 AND user_id = $2 RETURNING id';
+        } else {
+            sql = 'UPDATE expenses SET is_deleted = true, deleted_at = NOW(), updated_at = NOW() WHERE id = $1 AND user_id = $2 RETURNING id';
+        }
+        const delRes = await query(sql, [expenseId, userId]);
+        if (delRes.rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Không tìm thấy giao dịch' });
+        }
+        res.json({ success: true, message: permanent ? 'Đã xóa vĩnh viễn' : 'Đã xóa', id: delRes.rows[0].id });
+    } catch (error) {
+        console.error('Delete expense error:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
