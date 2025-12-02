@@ -22,18 +22,16 @@ router.get('/', async (req, res) => {
         const userId = req.user.id;
         const { event_type, upcoming, includeDeleted } = req.query;
 
-        // Luôn so sánh theo giờ Việt Nam (Asia/Ho_Chi_Minh)
-        const nowTz = "NOW() AT TIME ZONE 'Asia/Ho_Chi_Minh'";
         let queryText = `
             SELECT 
                 id, user_id, title, description,
-                -- Chuẩn hóa event_date về giờ VN để trả ra client
-                (event_date AT TIME ZONE 'Asia/Ho_Chi_Minh') AS event_date,
+                -- Trả về chuỗi thời gian nguyên bản (không kèm timezone offset) để client tự xử lý
+                TO_CHAR(event_date, 'YYYY-MM-DD"T"HH24:MI:SS') AS event_date,
                 event_type, color, is_recurring, recurrence_pattern, notification_enabled,
                 created_at, updated_at, deleted_at, is_deleted,
                 CASE 
-                    WHEN event_date > ${nowTz} THEN
-                        EXTRACT(EPOCH FROM (event_date - ${nowTz}))
+                    WHEN event_date > NOW() THEN
+                        EXTRACT(EPOCH FROM (event_date - NOW()))
                     ELSE 0
                 END as seconds_remaining
             FROM events
@@ -50,7 +48,7 @@ router.get('/', async (req, res) => {
             params.push(event_type);
         }
         if (upcoming === 'true') {
-            queryText += ` AND event_date > ${nowTz}`;
+            queryText += ` AND event_date > NOW()`;
         }
 
         queryText += ` ORDER BY event_date ASC`;
@@ -68,7 +66,7 @@ router.get('/:id', async (req, res) => {
         const result = await query(
             `SELECT 
                 id, user_id, title, description,
-                (event_date AT TIME ZONE 'Asia/Ho_Chi_Minh') AS event_date,
+                TO_CHAR(event_date, 'YYYY-MM-DD"T"HH24:MI:SS') AS event_date,
                 event_type, color, is_recurring, recurrence_pattern, notification_enabled,
                 created_at, updated_at, deleted_at, is_deleted
              FROM events WHERE id = $1 AND user_id = $2`,
@@ -88,12 +86,26 @@ router.post('/', eventValidation, async (req, res) => {
         if (!errors.isEmpty()) return res.status(400).json({ success: false, errors: errors.array() });
 
         const userId = req.user.id;
-        const { title, description, event_date, event_type, color, is_recurring, notification_enabled, recurrence_pattern } = req.body;
+        const { title, description, event_date, event_type, color, is_recurring, notification_enabled, recurrence_pattern, client_id } = req.body;
+
+        // Idempotency by client_id
+        if (client_id) {
+            const exists = await query('SELECT * FROM events WHERE user_id = $1 AND client_id = $2', [userId, client_id]);
+            if (exists.rows.length) {
+                const row = exists.rows[0];
+                const normalized = await query(
+                    `SELECT TO_CHAR(event_date, 'YYYY-MM-DD"T"HH24:MI:SS') AS event_date FROM events WHERE id = $1`,
+                    [row.id]
+                );
+                row.event_date = normalized.rows[0].event_date;
+                return res.status(200).json({ success: true, data: row });
+            }
+        }
 
         // Lưu event_date như giờ địa phương VN: bỏ timezone để tránh lệch
         let result = await query(
-            `INSERT INTO events (user_id, title, description, event_date, event_type, color, is_recurring, recurrence_pattern, notification_enabled)
-             VALUES ($1, $2, $3, CAST($4 AS timestamp), $5, $6, $7, $8, $9) RETURNING *`,
+            `INSERT INTO events (user_id, title, description, event_date, event_type, color, is_recurring, recurrence_pattern, notification_enabled, client_id)
+             VALUES ($1, $2, $3, CAST($4 AS timestamp), $5, $6, $7, $8, $9, $10) RETURNING *`,
             [
                 userId,
                 title,
@@ -103,13 +115,14 @@ router.post('/', eventValidation, async (req, res) => {
                 color || '#3498db',
                 !!is_recurring,
                 recurrence_pattern || null,
-                notification_enabled ?? true
+                notification_enabled ?? true,
+                client_id || null
             ]
         );
         // Chuẩn hóa event_date sang giờ VN trong phản hồi
         const row = result.rows[0];
         const normalized = await query(
-            `SELECT (event_date AT TIME ZONE 'Asia/Ho_Chi_Minh') AS event_date FROM events WHERE id = $1`,
+            `SELECT TO_CHAR(event_date, 'YYYY-MM-DD"T"HH24:MI:SS') AS event_date FROM events WHERE id = $1`,
             [row.id]
         );
         row.event_date = normalized.rows[0].event_date;
@@ -144,7 +157,7 @@ router.put('/:id', async (req, res) => {
         if (result.rows.length === 0) return res.status(404).json({ success: false, message: 'Not found' });
         const row = result.rows[0];
         const normalized = await query(
-            `SELECT (event_date AT TIME ZONE 'Asia/Ho_Chi_Minh') AS event_date FROM events WHERE id = $1`,
+            `SELECT TO_CHAR(event_date, 'YYYY-MM-DD"T"HH24:MI:SS') AS event_date FROM events WHERE id = $1`,
             [row.id]
         );
         row.event_date = normalized.rows[0].event_date;

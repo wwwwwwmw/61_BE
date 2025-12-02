@@ -141,13 +141,21 @@ router.post('/', [
         if (!errors.isEmpty()) return res.status(400).json({ success: false, errors: errors.array() });
 
         const userId = req.user.id;
-        const { amount, type, category_id, description, date, payment_method } = req.body;
+        const { amount, type, category_id, description, date, payment_method, client_id } = req.body;
+
+        // Idempotency by client_id
+        if (client_id) {
+            const exists = await query('SELECT * FROM expenses WHERE user_id = $1 AND client_id = $2', [userId, client_id]);
+            if (exists.rows.length) {
+                return res.status(200).json({ success: true, data: exists.rows[0] });
+            }
+        }
 
         // 1. Insert vào DB
         const result = await query(
-            `INSERT INTO expenses (user_id, amount, type, category_id, description, date, payment_method)
-             VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-            [userId, amount, type, category_id, description, date || new Date(), payment_method]
+            `INSERT INTO expenses (user_id, amount, type, category_id, description, date, payment_method, client_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+            [userId, amount, type, category_id, description, date || new Date(), payment_method, client_id || null]
         );
 
         const newExpense = result.rows[0];

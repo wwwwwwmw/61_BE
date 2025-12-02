@@ -19,6 +19,7 @@ const expenseRoutes = require('./routes/expenses');
 const eventRoutes = require('./routes/events');
 const categoryRoutes = require('./routes/categories');
 const budgetRoutes = require('./routes/budgets');
+const usersRoutes = require('./routes/users');
 
 // App Setup
 const app = express();
@@ -75,6 +76,10 @@ app.use('/api/expenses', expenseRoutes);
 app.use('/api/events', eventRoutes);
 app.use('/api/categories', categoryRoutes);
 app.use('/api/budgets', budgetRoutes);
+app.use('/api/users', usersRoutes);
+
+// Static serving for uploaded avatars
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // --- REMINDER / DEADLINE SCANNER (CRON JOB) ---
 // Quét DB mỗi phút để tìm:

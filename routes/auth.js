@@ -120,7 +120,8 @@ router.post('/verify-otp', async (req, res) => {
                 user: {
                     id: user.id,
                     email: user.email,
-                    name: user.full_name
+                    name: user.full_name,
+                    avatarUrl: user.avatar_url || null
                 }
             }
         });
@@ -177,7 +178,8 @@ router.post('/login', async (req, res) => {
                 user: {
                     id: user.id,
                     email: user.email,
-                    name: user.full_name
+                    name: user.full_name,
+                    avatarUrl: user.avatar_url || null
                 }
             }
         });

@@ -51,12 +51,20 @@ router.get('/:id', async (req, res) => {
 
 // 3. POST (Create)
 router.post('/', async (req, res) => {
-    const { title, description, priority, due_date, reminder_time, tags, category_id } = req.body;
+    const { title, description, priority, due_date, reminder_time, tags, category_id, client_id } = req.body;
     try {
+        // Idempotency by client_id
+        if (client_id) {
+            const exists = await query('SELECT * FROM todos WHERE user_id = $1 AND client_id = $2', [req.user.id, client_id]);
+            if (exists.rows.length) {
+                return res.json({ success: true, data: exists.rows[0] });
+            }
+        }
+
         const result = await query(
-            `INSERT INTO todos (user_id, title, description, priority, due_date, reminder_time, tags, category_id) 
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-            [req.user.id, title, description, priority, due_date, reminder_time, tags || [], category_id]
+            `INSERT INTO todos (user_id, title, description, priority, due_date, reminder_time, tags, category_id, client_id) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+            [req.user.id, title, description, priority, due_date, reminder_time, tags || [], category_id, client_id || null]
         );
         res.json({ success: true, data: result.rows[0] });
     } catch (err) {

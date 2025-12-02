@@ -16,6 +16,9 @@ CREATE TABLE IF NOT EXISTS users (
     last_login TIMESTAMP
 );
 
+-- Avatar support (safe add if missing)
+ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url VARCHAR(255);
+
 -- 2. Categories table
 CREATE TABLE IF NOT EXISTS categories (
     id SERIAL PRIMARY KEY,
